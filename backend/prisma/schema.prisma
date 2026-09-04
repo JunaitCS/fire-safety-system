@@ -1,0 +1,237 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  name      String
+  role      String   // MANAGER | OCCUPANT | RESPONDER
+  phone     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  buildings       Building[]
+  sosRequests     SOSRequest[]
+  complaints      Complaint[]
+  emergencyEvents EmergencyEvent[] @relation("TriggeredBy")
+  sessions        Session[]
+  presences       OccupantPresence[]
+}
+
+model Session {
+  id         String   @id @default(uuid())
+  userId     String
+  token      String   @unique
+  socketId   String?
+  buildingId String?
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
+
+  user     User      @relation(fields: [userId], references: [id])
+  building Building? @relation(fields: [buildingId], references: [id])
+}
+
+model Building {
+  id          String  @id @default(uuid())
+  ownerId     String
+  name        String
+  address     String
+  description String?
+  qrCode      String  @unique
+  isPublic    Boolean @default(false)
+  latitude    Float?
+  longitude   Float?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  owner       User              @relation(fields: [ownerId], references: [id])
+  floors      Floor[]
+  cameras     Camera[]
+  drills      FireDrill[]
+  emergencies EmergencyEvent[]
+  sessions    Session[]
+  complaints  Complaint[]
+  sosRequests SOSRequest[]
+  presences   OccupantPresence[]
+}
+
+model Floor {
+  id          String @id @default(uuid())
+  buildingId  String
+  floorNumber Int
+  name        String
+  svgData     String?
+  imageUrl    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  building Building       @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  elements FloorElement[]
+  cameras  Camera[]
+}
+
+model FloorElement {
+  id         String @id @default(uuid())
+  floorId    String
+  type       String // ROOM | WALL | DOOR | CORRIDOR | STAIRS | EMERGENCY_EXIT | FIRE_EXTINGUISHER | CAMERA | SENSOR
+  x          Float
+  y          Float
+  width      Float
+  height     Float
+  rotation   Float  @default(0)
+  properties String?
+
+  createdAt DateTime @default(now())
+
+  floor Floor @relation(fields: [floorId], references: [id], onDelete: Cascade)
+}
+
+model Camera {
+  id         String  @id @default(uuid())
+  buildingId String
+  floorId    String?
+  name       String
+  type       String  // WEBCAM | USB | IP | PHONE
+  sourceUrl  String
+  x          Float?
+  y          Float?
+  isActive   Boolean @default(true)
+  isExit     Boolean @default(false)
+  // Role separates the two fleets: EXIT = drill/evacuation counting (always previewable),
+  // CCTV = room cameras, locked, visible only during an ACTIVE fire to managers/responders.
+  // BOTH = mounted at an exit but also usable as room coverage during fire.
+  role       String  @default("CCTV")
+  direction  String?
+  lineRatio  Float?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  building   Building         @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  floor      Floor?           @relation(fields: [floorId], references: [id])
+  detections DetectionEvent[]
+  drillStats DrillExitStats[]
+}
+
+model DetectionEvent {
+  id         String   @id @default(uuid())
+  cameraId   String
+  count      Int
+  timestamp  DateTime @default(now())
+  confidence Float?
+  imageData  String?
+  behaviors  String?
+
+  camera Camera @relation(fields: [cameraId], references: [id], onDelete: Cascade)
+}
+
+model FireDrill {
+  id         String    @id @default(uuid())
+  buildingId String
+  startTime  DateTime  @default(now())
+  endTime    DateTime?
+  status     String    @default("active")
+  behaviorSummary String?
+
+  building  Building         @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  exitStats DrillExitStats[]
+}
+
+model DrillExitStats {
+  id        String @id @default(uuid())
+  drillId   String
+  cameraId  String
+  exitCount Int    @default(0)
+
+  drill  FireDrill @relation(fields: [drillId], references: [id], onDelete: Cascade)
+  camera Camera    @relation(fields: [cameraId], references: [id])
+
+  @@unique([drillId, cameraId])
+}
+
+model EmergencyEvent {
+  id          String    @id @default(uuid())
+  buildingId  String
+  triggeredBy String
+  startTime   DateTime  @default(now())
+  endTime     DateTime?
+  status      String    @default("ACTIVE") // ACTIVE | RESOLVED | DRILL
+  severity    String    @default("high")
+  type        String    @default("FIRE") // FIRE | DRILL
+  title       String?
+  description String?
+  autoDetect  Boolean   @default(false)
+  robotModule Boolean   @default(false)
+
+  building    Building            @relation(fields: [buildingId], references: [id])
+  triggerer   User                @relation(fields: [triggeredBy], references: [id], name: "TriggeredBy")
+  occupancies OccupancyTracking[]
+  sosRequests SOSRequest[]
+}
+
+model OccupancyTracking {
+  id          String   @id @default(uuid())
+  emergencyId String
+  roomId      String?
+  cameraId    String?
+  personCount Int
+  timestamp   DateTime @default(now())
+
+  emergency EmergencyEvent @relation(fields: [emergencyId], references: [id], onDelete: Cascade)
+}
+
+model SOSRequest {
+  id          String    @id @default(uuid())
+  buildingId  String
+  userId      String?
+  emergencyId String?
+  location    String?
+  message     String?
+  status      String    @default("PENDING") // PENDING | ACKNOWLEDGED | RESOLVED
+  timestamp   DateTime  @default(now())
+  resolvedAt  DateTime?
+
+  building  Building        @relation(fields: [buildingId], references: [id])
+  user      User?           @relation(fields: [userId], references: [id])
+  emergency EmergencyEvent? @relation(fields: [emergencyId], references: [id])
+}
+
+model Complaint {
+  id         String    @id @default(uuid())
+  buildingId String
+  userId     String
+  type       String
+  message    String
+  status     String    @default("open")
+  createdAt  DateTime  @default(now())
+  resolvedAt DateTime?
+
+  building Building @relation(fields: [buildingId], references: [id])
+  user     User     @relation(fields: [userId], references: [id])
+}
+
+
+model OccupantPresence {
+  id         String   @id @default(uuid())
+  buildingId String
+  userId     String?
+  guestName  String?
+  guestPhone String?
+  floorHint  String?
+  checkedInAt DateTime @default(now())
+  checkedOutAt DateTime?
+  isActive   Boolean  @default(true)
+  socketId   String?
+
+  building Building @relation(fields: [buildingId], references: [id], onDelete: Cascade)
+  user     User?    @relation(fields: [userId], references: [id])
+}
