@@ -129,8 +129,12 @@ export default function FloorDesigner() {
   const shapeRefs = useRef<Record<string, any>>({})
 
   const bgUrl =
-    bgDataUrl ||
-    (selectedFloor?.imageUrl ? `${getApiBase()}${selectedFloor.imageUrl}` : null)
+  bgDataUrl ||
+  (selectedFloor?.imageUrl
+    ? selectedFloor.imageUrl.startsWith('http')
+      ? selectedFloor.imageUrl
+      : `${getApiBase()}${selectedFloor.imageUrl}`
+    : null)
   const bgImage = useBackgroundImage(bgUrl)
 
   // Attach transformer to selected node
