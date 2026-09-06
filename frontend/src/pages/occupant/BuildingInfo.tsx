@@ -257,7 +257,11 @@ export default function BuildingInfo() {
   // space as the manager canvas. Scales down to fit phones.
   const mapWrapRef = useRef<HTMLDivElement>(null)
   const [mapScale, setMapScale] = useState(0.7)
-  const floorImageUrl = selectedFloor?.imageUrl ? `${getApiBase()}${selectedFloor.imageUrl}` : null
+  const floorImageUrl = selectedFloor?.imageUrl
+    ? selectedFloor.imageUrl.startsWith('http')
+      ? selectedFloor.imageUrl
+      : `${getApiBase()}${selectedFloor.imageUrl}`
+    : null
   const floorImage = useFloorImage(floorImageUrl)
 
   useEffect(() => {
