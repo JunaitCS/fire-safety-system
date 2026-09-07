@@ -1428,6 +1428,18 @@ class PersonTracker:
                     k
                 ] = False
 
+    def get_snapshot(self, camera_id):
+        """Return a copy of the latest annotated frame (for /snapshot polling).
+
+        Short-lived polling is proxy/gunicorn-safe, unlike the infinite /feed
+        MJPEG stream which can monopolize a sync worker until timeout.
+        """
+        with self.lock:
+            f = self.frames.get(camera_id)
+            if f is None:
+                return None
+            return f.copy()
+
     def get_frame(self, camera_id):
 
         with self.lock:

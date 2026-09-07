@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import api, { getCvBase } from '../../utils/api'
+import SnapshotImg from '../../components/camera/SnapshotImg'
 import { PageHeader, LoadingState, ErrorState, EmptyState, ConfirmModal } from '../../components/ui'
 import {
   VideoCameraIcon,
@@ -238,9 +239,8 @@ export default function CameraManager() {
                     </div>
                   </div>
                 ) : streaming.has(cam.id) ? (
-                  <img src={`${getCvBase()}/cameras/${cam.id}/feed`} alt={`${cam.name} live feed`} className="w-full h-full object-cover"
-                    onError={() => setStreaming((p) => { const n = new Set(p); n.delete(cam.id); return n })} />
-                ) : (
+                  <SnapshotImg cameraId={cam.id} active={streaming.has(cam.id)} alt={`${cam.name} live feed`} className="w-full h-full object-cover"
+                />) : (
                   <div className="absolute inset-0 flex items-center justify-center text-gray-500">
                     <div className="text-center">
                       <VideoCameraIcon className="w-12 h-12 mx-auto mb-2 opacity-50" />

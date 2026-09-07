@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import api, { getCvBase } from '../../utils/api'
+import SnapshotImg from '../../components/camera/SnapshotImg'
 import { useSocketStore } from '../../store/socketStore'
 import { useSirenStore } from '../../store/sirenStore'
 import { PageHeader, LoadingState } from '../../components/ui'
@@ -164,6 +165,15 @@ export default function DrillManager() {
     const ids = new Set<string>()
     for (const cam of cams) {
       try {
+        const isBrowser = String(cam.sourceUrl || '').toLowerCase().startsWith('browser')
+        if (isBrowser) {
+          // Browser loops ignore a second /start while active, which would
+          // leave the drill_id unattached (no exit counts in the report).
+          // Restart so this drill owns the loop; the phone keeps pushing and
+          // the buffer refills within a second.
+          await fetch(`${getCvBase()}/cameras/${cam.id}/stop`, { method: 'POST' }).catch(() => {})
+          await new Promise((r) => setTimeout(r, 300))
+        }
         // Reuse the camera's SAVED configuration (source, line position).
         await fetch(`${getCvBase()}/cameras/${cam.id}/start`, {
           method: 'POST',
@@ -352,8 +362,7 @@ export default function DrillManager() {
                     <motion.div key={cam.id} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.06 }} className="bg-white rounded-lg border overflow-hidden">
                       <div className="bg-gray-900 aspect-video relative">
                         {isLive ? (
-                          <img src={`${getCvBase()}/cameras/${cam.id}/feed`} alt={cam.name} className="w-full h-full object-contain"
-                            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none' }} />
+                          <SnapshotImg cameraId={cam.id} active={isLive} alt={cam.name} className="w-full h-full object-contain" />
                         ) : (
                           <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-sm">Connecting…</div>
                         )}

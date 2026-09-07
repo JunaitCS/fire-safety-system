@@ -191,8 +191,7 @@ router.post('/:id/test', authMiddleware, async (req, res) => {
   }
 });
 
-router.get('/:id/detections', authMiddleware, async (req, res) => {
-  try {
+router.get('/:id/detections', authMiddleware, async (req, res) => {  try {
     const detections = await prisma.detectionEvent.findMany({
       where: { cameraId: req.params.id },
       orderBy: { timestamp: 'desc' },
@@ -203,6 +202,24 @@ router.get('/:id/detections', authMiddleware, async (req, res) => {
   } catch (error) {
     console.error('Error fetching detections:', error);
     res.status(500).json({ error: 'Failed to fetch detections' });
+  }
+});
+
+// Single-camera lookup (used by the phone publish page to show the camera
+// name instead of a raw id, so publishing to the wrong camera is obvious).
+// Any authenticated role may read it — the publish page is open to
+// MANAGER / RESPONDER / OCCUPANT for testing.
+router.get('/:id', authMiddleware, async (req, res) => {
+  try {
+    const camera = await prisma.camera.findUnique({
+      where: { id: req.params.id },
+      include: { floor: true, building: { select: { id: true, name: true } } },
+    });
+    if (!camera) return res.status(404).json({ error: 'Camera not found' });
+    res.json(camera);
+  } catch (error) {
+    console.error('Error fetching camera:', error);
+    res.status(500).json({ error: 'Failed to fetch camera' });
   }
 });
 

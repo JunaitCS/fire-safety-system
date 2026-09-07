@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import api, { getCvBase } from '../../utils/api'
+import SnapshotImg from '../../components/camera/SnapshotImg'
 import { useSocketStore } from '../../store/socketStore'
 import { useSirenStore } from '../../store/sirenStore'
 import { PageHeader, LoadingState, ConfirmModal } from '../../components/ui'
@@ -261,9 +262,8 @@ export default function FireEmergencyConsole() {
                     <motion.div key={f.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: Math.min(i * 0.05, 0.4) }}
                       className="bg-white rounded-lg border overflow-hidden">
                       <div className="bg-gray-900 aspect-video relative">
-                        <img src={f.feedUrl.startsWith('http') ? f.feedUrl : `${getCvBase()}/cameras/${f.id}/feed`}
-                          alt={f.name} className="w-full h-full object-contain"
-                          onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.25' }} />
+                        <SnapshotImg cameraId={f.id} active baseUrl={String(f.feedUrl || '').split('/cameras/')[0] || undefined}
+                          alt={f.name} className="w-full h-full object-contain" />
                         <div className="absolute top-2 left-2 px-2 py-0.5 bg-red-600 text-white text-xs rounded flex items-center gap-1">
                           <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" /> FIRE LIVE
                         </div>

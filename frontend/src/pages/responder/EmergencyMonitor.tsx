@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import api, { getCvBase } from '../../utils/api'
+import SnapshotImg from '../../components/camera/SnapshotImg'
 import { ConfirmModal } from '../../components/ui'
 import { useSocketStore } from '../../store/socketStore'
 import {
@@ -244,9 +245,8 @@ export default function EmergencyMonitor() {
             {feeds.map((c: any) => (
               <div key={c.id} className="bg-gray-900 rounded-lg overflow-hidden">
                 <div className="aspect-video relative">
-                  <img src={c.feedUrl?.startsWith('http') ? c.feedUrl : `${getCvBase()}/cameras/${c.id}/feed`}
-                    alt={c.name} className="w-full h-full object-contain"
-                    onError={(e) => { (e.target as HTMLImageElement).style.opacity = '0.25' }} />
+                  <SnapshotImg cameraId={c.id} active baseUrl={String(c.feedUrl || '').split('/cameras/')[0] || undefined}
+                    alt={c.name} className="w-full h-full object-contain" />
                   <div className="absolute top-2 left-2 px-2 py-0.5 bg-red-600 text-white text-xs rounded flex items-center gap-1">
                     <span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" /> FIRE LIVE
                   </div>

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import api, { getCvBase } from '../../utils/api'
+import SnapshotImg from '../../components/camera/SnapshotImg'
 import {
   ArrowLeftIcon,
   PlayIcon,
@@ -35,6 +36,7 @@ export default function CameraTest() {
   const [exitedCount, setExitedCount] = useState<number | null>(null)
   const [status, setStatus] = useState<'idle' | 'starting' | 'live' | 'error'>('idle')
   const [errorMsg, setErrorMsg] = useState('')
+  const [feedState, setFeedState] = useState<'live' | 'waiting' | 'stale' | 'error'>('waiting')
   const [cvHealthy, setCvHealthy] = useState<boolean | null>(null)
   const pollRef = useRef<number | null>(null)
 
@@ -198,6 +200,27 @@ export default function CameraTest() {
                 <p className="font-medium">{selectedCamera.name}</p>
                 <p className="text-gray-600">{selectedCamera.floor?.name || 'Location not set'} · {selectedCamera.type} · {roleLabel === 'BOTH' ? 'Exit + Room' : 'Exit camera'}</p>
                 <p className="text-xs text-gray-500">Uses this camera's saved settings (position, direction, counting line) — no manual setup needed here.</p>
+                {selectedCamera.type === 'BROWSER' && (
+                  <div className="p-2 bg-blue-50 border border-blue-200 rounded-lg">
+                    <p className="text-xs text-blue-800 font-medium">This camera needs a phone publishing to it — make sure it is THIS camera:</p>
+                    <p className="text-xs font-mono break-all text-blue-700">{`${window.location.origin}/camera/publish/${selectedCamera.id}`}</p>
+                    <div className="flex gap-2 mt-1.5">
+                      <button
+                        onClick={() => {
+                          const url = `${window.location.origin}/camera/publish/${selectedCamera.id}`
+                          if (navigator.clipboard) navigator.clipboard.writeText(url).catch(() => {})
+                          else window.prompt('Copy publish link:', url)
+                        }}
+                        className="px-2 py-1 border rounded text-xs bg-white hover:bg-gray-50"
+                      >
+                        Copy publish link
+                      </button>
+                      <a href={`/camera/publish/${selectedCamera.id}`} target="_blank" rel="noreferrer" className="px-2 py-1 border rounded text-xs bg-white hover:bg-gray-50">
+                        Open
+                      </a>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -235,19 +258,31 @@ export default function CameraTest() {
         <div className="lg:col-span-2 card p-4">
           <div className="flex items-center justify-between mb-3">
             <h2 className="font-semibold">Live preview</h2>
-            {status === 'live' && (
+            {status === 'live' && feedState === 'live' && (
               <span className="flex items-center gap-1 text-xs font-medium text-red-600 bg-red-50 px-2 py-1 rounded">
                 <span className="w-2 h-2 bg-red-600 rounded-full animate-pulse" /> LIVE
+              </span>
+            )}
+            {status === 'live' && feedState === 'waiting' && (
+              <span className="text-xs font-medium text-amber-700 bg-amber-50 px-2 py-1 rounded">
+                Phone not publishing yet — open its Publish link
+              </span>
+            )}
+            {status === 'live' && feedState === 'error' && (
+              <span className="text-xs font-medium text-red-700 bg-red-50 px-2 py-1 rounded">
+                CV service unreachable
               </span>
             )}
           </div>
 
           <div className="bg-gray-900 rounded-xl aspect-video flex items-center justify-center overflow-hidden relative">
             {streaming && selectedCamera && (
-              <img
-                src={`${getCvBase()}/cameras/${selectedCamera.id}/feed`}
+              <SnapshotImg
+                cameraId={selectedCamera.id}
+                active={streaming}
                 alt={`${selectedCamera.name} test feed`}
                 className="w-full h-full object-contain"
+                onState={setFeedState}
               />
             )}
             {status === 'idle' && (

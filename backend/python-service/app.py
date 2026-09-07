@@ -113,8 +113,36 @@ def stats(camera_id):
     )
 
 
+@app.route("/cameras/<camera_id>/snapshot")
+def snapshot(camera_id):
+    """Single-frame snapshot for polling viewers (proxy/gunicorn-safe).
+
+    Returns the latest annotated JPEG (200), or 204 when no frame exists yet.
+    Prefer this over /feed on hosted deployments (Render, etc.): every request
+    finishes in milliseconds, so sync workers are never blocked and killed.
+    """
+    frame = detector.get_snapshot(camera_id)
+    if frame is None:
+        return ("", 204)
+
+    ok, buf = cv2.imencode(
+        ".jpg",
+        frame,
+        [int(cv2.IMWRITE_JPEG_QUALITY), 72]
+    )
+    if not ok:
+        return jsonify({"success": False, "error": "encode-failed"}), 500
+
+    return Response(buf.tobytes(), mimetype="image/jpeg")
+
+
 @app.route("/cameras/<camera_id>/feed")
 def feed(camera_id):
+    # NOTE: capped at ~25s so a forgotten viewer tab can never hold a sync
+    # gunicorn worker past its timeout (which kills the worker and wipes all
+    # in-memory camera state). Prefer /snapshot polling for live views.
+    deadline = time.time() + 25
+
     def gen():
         blank = np.zeros((480, 640, 3), dtype=np.uint8)
 
@@ -131,6 +159,9 @@ def feed(camera_id):
         last_sent = blank
 
         while True:
+            if time.time() > deadline:
+                break
+
             history = detector.get_frame(camera_id)
 
             raw = (
