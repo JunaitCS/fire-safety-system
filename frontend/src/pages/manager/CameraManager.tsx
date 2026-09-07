@@ -14,7 +14,7 @@ import {
   ArrowLeftIcon,
 } from '@heroicons/react/24/outline'
 
-type CameraType = 'WEBCAM' | 'USB' | 'IP' | 'PHONE'
+type CameraType = 'WEBCAM' | 'USB' | 'IP' | 'PHONE' | 'BROWSER'
 
 interface Camera {
   id: string
@@ -35,6 +35,7 @@ const SOURCE_HINTS: Record<CameraType, { placeholder: string; hint: string }> = 
   USB: { placeholder: '1', hint: 'USB camera index — try 1, 2, 3.' },
   IP: { placeholder: 'rtsp://user:pass@192.168.1.64/stream', hint: 'Full RTSP/HTTP stream URL from your NVR.' },
   PHONE: { placeholder: 'http://192.168.1.5:8080/video', hint: 'IP Webcam app URL (Android) or EpocCam (iOS).' },
+  BROWSER: { placeholder: 'browser', hint: 'Phone/laptop browser camera — save, then open the Publish link on that device and allow the rear camera.' },
 }
 
 export default function CameraManager() {
@@ -95,6 +96,18 @@ export default function CameraManager() {
   const testSource = async () => {
     setTestState('testing'); setTestMsg('')
     try {
+      // BROWSER cameras publish from another device — just verify CV reachability.
+      if (form.type === 'BROWSER') {
+        const cvHealth = await fetch(`${getCvBase()}/health`).then((r) => r.json()).catch(() => null)
+        if (cvHealth?.model_loaded !== false && cvHealth?.status) {
+          setTestState('ok')
+          setTestMsg('CV service reachable. After save, open the Publish link on your phone to start the rear camera.')
+        } else {
+          setTestState('fail')
+          setTestMsg(`CV service unreachable at ${getCvBase()}. Start python app.py first — you can still save.`)
+        }
+        return
+      }
       // Local preview for webcam types
       if ((form.type === 'WEBCAM' || form.type === 'USB') && /^\d+$/.test(form.sourceUrl.trim())) {
         try {
@@ -246,6 +259,32 @@ export default function CameraManager() {
                 <p><strong>Detections:</strong> {cam._count?.detections || 0}</p>
                 <p><strong>Status:</strong> {cam.isActive ? 'Enabled' : 'Disabled'}</p>
                 {locked && <p className="text-xs text-gray-500">Room CCTV never streams here — use the Fire Emergency console during a fire.</p>}
+                {cam.type === 'BROWSER' && (
+                  <div className="p-2 bg-blue-50 border border-blue-100 rounded-lg">
+                    <p className="text-xs text-blue-800 font-medium">Phone publish link (open on the phone):</p>
+                    <p className="text-xs font-mono break-all text-blue-700">{`${window.location.origin}/camera/publish/${cam.id}`}</p>
+                    <div className="flex gap-2 mt-1.5">
+                      <button
+                        onClick={() => {
+                          const url = `${window.location.origin}/camera/publish/${cam.id}`
+                          if (navigator.clipboard) navigator.clipboard.writeText(url).catch(() => {})
+                          else window.prompt('Copy publish link:', url)
+                        }}
+                        className="px-2 py-1 border rounded text-xs bg-white hover:bg-gray-50"
+                      >
+                        Copy link
+                      </button>
+                      <a
+                        href={`/camera/publish/${cam.id}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="px-2 py-1 border rounded text-xs bg-white hover:bg-gray-50"
+                      >
+                        Open
+                      </a>
+                    </div>
+                  </div>
+                )}
               </div>
               <div className="flex gap-2">
                 {locked ? (
@@ -289,9 +328,9 @@ export default function CameraManager() {
                   </div>
                   <div>
                     <label className="label">Type</label>
-                    <div className="grid grid-cols-4 gap-2">
-                      {(['WEBCAM', 'USB', 'IP', 'PHONE'] as CameraType[]).map((t) => (
-                        <button key={t} type="button" onClick={() => setForm({ ...form, type: t, sourceUrl: t === 'WEBCAM' ? '0' : t === 'USB' ? '1' : form.sourceUrl })}
+                    <div className="grid grid-cols-5 gap-2">
+                      {(['WEBCAM', 'USB', 'IP', 'PHONE', 'BROWSER'] as CameraType[]).map((t) => (
+                        <button key={t} type="button" onClick={() => setForm({ ...form, type: t, sourceUrl: t === 'WEBCAM' ? '0' : t === 'USB' ? '1' : t === 'BROWSER' ? 'browser' : form.sourceUrl === 'browser' ? '' : form.sourceUrl })}
                           className={`px-2 py-2 rounded-lg text-xs font-bold border ${form.type === t ? 'bg-gray-900 text-white border-gray-900' : 'hover:bg-gray-50'}`}>{t}</button>
                       ))}
                     </div>

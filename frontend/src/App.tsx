@@ -25,6 +25,7 @@ import EmergencyView from './pages/occupant/EmergencyView'
 import ResponderDashboard from './pages/responder/Dashboard'
 import EmergencyMonitor from './pages/responder/EmergencyMonitor'
 import OccupancyView from './pages/responder/OccupancyView'
+import BrowserPublisher from './components/camera/BrowserPublisher'
 
 function ProtectedRoute({ children, allowedRoles }: { children: ReactNode; allowedRoles: string[] }) {
   const { user, token } = useAuthStore()
@@ -48,6 +49,16 @@ function App() {
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
       <Route path="/building/:qrCode" element={<BuildingInfo />} />
+      <Route path="/camera/publish/:cameraId" element={
+        <ProtectedRoute allowedRoles={['MANAGER', 'RESPONDER', 'OCCUPANT']}>
+          <BrowserPublisher />
+        </ProtectedRoute>
+      } />
+      <Route path="/camera/publish" element={
+        <ProtectedRoute allowedRoles={['MANAGER', 'RESPONDER', 'OCCUPANT']}>
+          <BrowserPublisher />
+        </ProtectedRoute>
+      } />
       
       <Route path="/manager" element={
         <ProtectedRoute allowedRoles={['MANAGER']}>

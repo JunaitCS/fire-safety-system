@@ -36,7 +36,7 @@ router.post('/', authMiddleware, async (req, res) => {
     }
     const { name, type, streamUrl, sourceUrl, buildingId, floorId, x, y, isExit, role, direction, isActive, lineRatio } = req.body;
     if (!name || !buildingId) return res.status(400).json({ error: 'Camera name and buildingId are required' });
-    const allowedTypes = ['WEBCAM', 'USB', 'IP', 'PHONE'];
+    const allowedTypes = ['WEBCAM', 'USB', 'IP', 'PHONE', 'BROWSER'];
     if (type && !allowedTypes.includes(String(type).toUpperCase())) {
       return res.status(400).json({ error: `Invalid type. Use: ${allowedTypes.join(', ')}` });
     }
@@ -47,8 +47,12 @@ router.post('/', authMiddleware, async (req, res) => {
     }
     const building = await prisma.building.findUnique({ where: { id: buildingId } });
     if (!building) return res.status(404).json({ error: 'Building not found' });
-    const resolvedSource = sourceUrl || streamUrl || '0';
-    if (!String(resolvedSource).trim()) return res.status(400).json({ error: 'Camera source is required (index or URL)' });
+    const resolvedType = (type || 'WEBCAM').toUpperCase();
+    let resolvedSource = sourceUrl || streamUrl || (resolvedType === 'BROWSER' ? 'browser' : '0');
+    if (!String(resolvedSource).trim()) {
+      if (resolvedType === 'BROWSER') resolvedSource = 'browser';
+      else return res.status(400).json({ error: 'Camera source is required (index or URL)' });
+    }
     let validatedFloorId = null;
     if (floorId) {
       const floor = await prisma.floor.findUnique({ where: { id: floorId } });
@@ -63,7 +67,7 @@ router.post('/', authMiddleware, async (req, res) => {
     const camera = await prisma.camera.create({
       data: {
         name: String(name).trim(),
-        type: (type || 'WEBCAM').toUpperCase(),
+        type: resolvedType,
         sourceUrl: resolvedSource || null,
         buildingId,
         floorId: validatedFloorId,
@@ -98,7 +102,11 @@ router.put('/:id', authMiddleware, async (req, res) => {
     const { name, type, streamUrl, sourceUrl, floorId, x, y, isExit, role, direction, isActive, buildingId, lineRatio } = req.body;
     const data = {};
     if (name !== undefined) data.name = String(name).trim();
-    if (type !== undefined) data.type = String(type).toUpperCase();
+    if (type !== undefined) {
+      const t = String(type).toUpperCase();
+      if (!['WEBCAM', 'USB', 'IP', 'PHONE', 'BROWSER'].includes(t)) return res.status(400).json({ error: 'Invalid type' });
+      data.type = t;
+    }
     if (streamUrl !== undefined || sourceUrl !== undefined) data.sourceUrl = sourceUrl || streamUrl || '0';
     if (x !== undefined) data.x = x;
     if (y !== undefined) data.y = y;

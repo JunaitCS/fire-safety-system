@@ -52,6 +52,42 @@ def start_camera(camera_id):
     })
 
 
+@app.route("/cameras/<camera_id>/frame", methods=["POST"])
+def push_frame(camera_id):
+    """Ingest a JPEG pushed by a phone/laptop browser (BrowserPublisher).
+
+    Accepts raw image/jpeg bytes (preferred) or JSON {image: dataURL/base64}.
+    Isolated from the VideoCapture path — never touches USB/RTSP logic.
+    """
+    try:
+        raw = None
+        ctype = (request.content_type or "").lower()
+        if "json" in ctype:
+            data = request.json or {}
+            b64 = data.get("image", "") or ""
+            if "," in b64:
+                b64 = b64.split(",", 1)[1]
+            import base64
+            try:
+                raw = base64.b64decode(b64)
+            except Exception:
+                return jsonify({"success": False, "error": "bad-base64"}), 400
+        else:
+            raw = request.get_data() or None
+
+        if not raw or len(raw) < 1000 or len(raw) > 5 * 1024 * 1024:
+            return jsonify({"success": False, "error": "empty-frame"}), 400
+
+        # Reject non-JPEG payloads early (SOI marker).
+        if len(raw) < 2 or raw[0] != 0xFF or raw[1] != 0xD8:
+            return jsonify({"success": False, "error": "not-jpeg"}), 400
+
+        detector.push_browser_frame(camera_id, raw)
+        return jsonify({"success": True})
+    except Exception:
+        return jsonify({"success": False, "error": "ingest-failed"}), 500
+
+
 @app.route("/cameras/<camera_id>/stop", methods=["POST"])
 def stop_camera(camera_id):
     detector.stop_camera(camera_id)

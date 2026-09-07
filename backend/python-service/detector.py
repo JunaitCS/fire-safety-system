@@ -216,6 +216,11 @@ class PersonTracker:
         self.frames = {}
         self.stats = {}
 
+        # Browser-as-camera buffers (phone/laptop publishing via getUserMedia).
+        # Isolated from the VideoCapture path: camera_id -> JPEG bytes + timestamp.
+        self.browser_frames = {}
+        self.browser_ts = {}
+
         self.lock = threading.Lock()
 
         # hist[cam][id] =
@@ -1163,6 +1168,162 @@ class PersonTracker:
             f"[cam {cam_id}] stopped"
         )
 
+    def push_browser_frame(self, camera_id, jpeg_bytes):
+        """Store the latest JPEG pushed by a phone/laptop browser."""
+        with self.lock:
+            self.browser_frames[camera_id] = jpeg_bytes
+            self.browser_ts[camera_id] = time.time()
+
+    def _grab_browser_frame(self, cam_id):
+        with self.lock:
+            buf = self.browser_frames.get(cam_id)
+            ts = self.browser_ts.get(cam_id, 0)
+        if buf is None:
+            return None, ts
+        try:
+            arr = np.frombuffer(buf, dtype=np.uint8)
+            frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            return frame, ts
+        except Exception:
+            return None, ts
+
+    def _browser_loop(
+        self,
+        cam_id,
+        source,
+        is_exit,
+        drill_id
+    ):
+        """Capture loop for browser-published cameras (no VideoCapture).
+
+        Reads JPEGs pushed to push_browser_frame() by BrowserPublisher.tsx,
+        then reuses the same _detect() + stats + backend POST path as _loop.
+        Stays alive through disconnects so the phone can reconnect.
+        """
+        n = 0
+        last_post = 0.0
+        last_boxes = 0
+        last_behaviors = {}
+        last_conf = 0.0
+
+        while self.active.get(cam_id):
+            frame, ts = self._grab_browser_frame(cam_id)
+
+            if frame is None:
+                time.sleep(0.05)
+                with self.lock:
+                    s = self.stats.get(cam_id, {})
+                    if not s.get("waiting"):
+                        self.stats[cam_id] = {
+                            **s,
+                            "count": 0,
+                            "tracks": 0,
+                            "active": True,
+                            "waiting": True,
+                            "timestamp": datetime.now().isoformat(),
+                        }
+                continue
+
+            # Stale publisher (phone closed tab / lost network): keep the
+            # last annotated frame on /feed but flag stats instead of exiting.
+            if time.time() - ts > 10:
+                time.sleep(0.2)
+                with self.lock:
+                    s = self.stats.get(cam_id, {})
+                    self.stats[cam_id] = {
+                        **s,
+                        "active": True,
+                        "stale": True,
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                continue
+
+            n += 1
+            count = last_boxes
+            new_exits = 0
+            behaviors = last_behaviors
+            mean_conf = last_conf
+
+            if n % DETECT_EVERY == 0:
+                t0 = time.time()
+                (
+                    display,
+                    count,
+                    new_exits,
+                    behaviors,
+                    mean_conf
+                ) = self._detect(
+                    frame,
+                    cam_id,
+                    is_exit,
+                    IMGSZ
+                )
+                last_boxes = count
+                last_behaviors = behaviors
+                last_conf = mean_conf
+
+                bc = self.behavior_counts[cam_id]
+                bc["maxOccupancy"] = max(bc["maxOccupancy"], count)
+                infer_ms = (time.time() - t0) * 1000
+                with self.lock:
+                    s = self.stats.get(cam_id, {})
+                    s["inferMs"] = round(infer_ms, 1)
+            else:
+                display = frame.copy()
+                cv2.rectangle(display, (4, 4), (170, 36), (0, 0, 0), -1)
+                cv2.putText(
+                    display, f"People: {last_boxes}", (10, 26),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2
+                )
+                if is_exit:
+                    ly = self._line_y(display.shape[0], cam_id)
+                    cv2.line(display, (0, ly),
+                             (display.shape[1], ly), (0, 0, 255), 2)
+
+            with self.lock:
+                self.stats[cam_id] = {
+                    "count": count,
+                    "exited": self.exited[cam_id],
+                    "tracks": count,
+                    "behaviors": behaviors,
+                    "meanConfidence": round(mean_conf, 3),
+                    "timestamp": datetime.now().isoformat(),
+                    "active": True,
+                    "inferMs": self.stats.get(cam_id, {}).get("inferMs"),
+                    "usbMode": False,
+                    "browser": True,
+                }
+                self.frames[cam_id] = display
+
+            now = time.time()
+            if now - last_post >= 2.0:
+                post_async(
+                    f"{self.backend_url}/api/cameras/{cam_id}/detect",
+                    {
+                        "count": count,
+                        "confidence": round(mean_conf, 3) if mean_conf else 0.5,
+                        "behaviors": behaviors,
+                    },
+                )
+                last_post = now
+
+            if new_exits and drill_id:
+                post_async(
+                    f"{self.backend_url}/api/drills/{drill_id}/exit/{cam_id}",
+                    {"count": new_exits},
+                )
+
+            time.sleep(0.002)
+
+        with self.lock:
+            self.active[cam_id] = False
+            self.stats[cam_id] = {
+                **self.stats.get(cam_id, {}),
+                "active": False
+            }
+
+        print(f"[cam {cam_id}] browser stopped")
+
     def start_camera(
         self,
         camera_id,
@@ -1225,8 +1386,16 @@ class PersonTracker:
                     camera_id
                 ] = 0
 
+        # Browser sources bypass VideoCapture entirely.
+        is_browser = str(source).lower().startswith("browser")
+
+        if is_browser:
+            # Drop any stale phone frame from a previous session.
+            self.browser_frames.pop(camera_id, None)
+            self.browser_ts.pop(camera_id, None)
+
         t = threading.Thread(
-            target=self._loop,
+            target=self._browser_loop if is_browser else self._loop,
             args=(
                 camera_id,
                 str(source),
