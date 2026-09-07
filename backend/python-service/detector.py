@@ -28,6 +28,11 @@ USB_DETECT_EVERY = int(os.environ.get("USB_DETECT_EVERY_N", "5"))
 
 DETECT_EVERY = int(os.environ.get("DETECT_EVERY_N", "3"))
 
+# Browser-published cameras (phone/laptop over WAN, often weak server CPU):
+# lighter inference + time-budgeted so video stays smooth on free-tier hosts.
+BROWSER_IMGSZ = int(os.environ.get("YOLO_BROWSER_IMGSZ", "416"))
+BROWSER_INFER_EVERY_MS = int(os.environ.get("BROWSER_INFER_EVERY_MS", "1000"))
+
 EXIT_RATIO = float(os.environ.get("EXIT_LINE_RATIO", "0.62"))
 EXIT_DIR = os.environ.get("EXIT_DIRECTION", "down")
 
@@ -1200,11 +1205,12 @@ class PersonTracker:
         then reuses the same _detect() + stats + backend POST path as _loop.
         Stays alive through disconnects so the phone can reconnect.
         """
-        n = 0
         last_post = 0.0
         last_boxes = 0
         last_behaviors = {}
         last_conf = 0.0
+        last_infer = 0.0
+        last_consumed = 0.0
 
         while self.active.get(cam_id):
             frame, ts = self._grab_browser_frame(cam_id)
@@ -1238,13 +1244,24 @@ class PersonTracker:
                     }
                 continue
 
-            n += 1
+            # Only burn CPU on NEW frames; otherwise yield so inference and
+            # the web server stay responsive on weak (free-tier) CPUs.
+            if ts <= last_consumed:
+                time.sleep(0.05)
+                continue
+            last_consumed = ts
+
+            now = time.time()
             count = last_boxes
             new_exits = 0
             behaviors = last_behaviors
             mean_conf = last_conf
 
-            if n % DETECT_EVERY == 0:
+            # Slow path: YOLO inference at most ~1/sec (see
+            # BROWSER_INFER_EVERY_MS). Boxes/counts refresh here; video below
+            # never waits for it.
+            if now - last_infer >= BROWSER_INFER_EVERY_MS / 1000.0:
+                last_infer = now
                 t0 = time.time()
                 (
                     display,
@@ -1256,7 +1273,7 @@ class PersonTracker:
                     frame,
                     cam_id,
                     is_exit,
-                    IMGSZ
+                    BROWSER_IMGSZ
                 )
                 last_boxes = count
                 last_behaviors = behaviors
@@ -1269,6 +1286,8 @@ class PersonTracker:
                     s = self.stats.get(cam_id, {})
                     s["inferMs"] = round(infer_ms, 1)
             else:
+                # Fast path: cheap overlay only (~1ms) so video flows at the
+                # phone's upload rate even while inference is still crunching.
                 display = frame.copy()
                 cv2.rectangle(display, (4, 4), (170, 36), (0, 0, 0), -1)
                 cv2.putText(

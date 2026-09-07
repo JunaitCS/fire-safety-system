@@ -19,7 +19,7 @@ interface Props {
  * monopolize a sync gunicorn worker until it is killed (wiping all camera
  * state). Visually equivalent at ~1fps for monitoring purposes.
  */
-export default function SnapshotImg({ cameraId, active, intervalMs = 800, alt = 'Live view', className, baseUrl, onState }: Props) {
+export default function SnapshotImg({ cameraId, active, intervalMs = 500, alt = 'Live view', className, baseUrl, onState }: Props) {
   const [url, setUrl] = useState<string | null>(null)
   const [waiting, setWaiting] = useState(true)
   const timerRef = useRef<number | null>(null)
