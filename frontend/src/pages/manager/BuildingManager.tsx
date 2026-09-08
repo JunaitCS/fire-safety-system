@@ -21,13 +21,21 @@ interface Building {
   description?: string
   qrCode: string
   isPublic: boolean
+  latitude?: number | null
+  longitude?: number | null
   _count?: { floors: number; cameras: number }
+}
+
+const mapsUrl = (address: string, lat?: number | null, lng?: number | null) => {
+  if (lat != null && lng != null) return `https://maps.google.com/?q=${lat},${lng}`
+  return `https://maps.google.com/?q=${encodeURIComponent(address)}`
 }
 
 export default function BuildingManager() {
   const [buildings, setBuildings] = useState<Building[]>([])
   const [showModal, setShowModal] = useState(false)
-  const [form, setForm] = useState({ name: '', address: '', description: '', isPublic: true })
+  const [editing, setEditing] = useState<Building | null>(null)
+  const [form, setForm] = useState({ name: '', address: '', description: '', latitude: '', longitude: '', isPublic: true })
   const [formError, setFormError] = useState('')
   const [creating, setCreating] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -59,31 +67,68 @@ export default function BuildingManager() {
       setFormError('Building name and address are required.')
       return
     }
+    const lat = form.latitude.trim() === '' ? null : Number(form.latitude)
+    const lng = form.longitude.trim() === '' ? null : Number(form.longitude)
+    if ((lat !== null && !Number.isFinite(lat)) || (lng !== null && !Number.isFinite(lng))) {
+      setFormError('Latitude/longitude must be valid numbers (or left blank).')
+      return
+    }
+    if (lat !== null && (lat < -90 || lat > 90)) {
+      setFormError('Latitude must be between -90 and 90.')
+      return
+    }
+    if (lng !== null && (lng < -180 || lng > 180)) {
+      setFormError('Longitude must be between -180 and 180.')
+      return
+    }
     setCreating(true)
     try {
-      const res = await api.post('/buildings', {
+      const payload = {
         name: form.name.trim(),
         address: form.address.trim(),
         description: form.description.trim() || undefined,
+        latitude: lat,
+        longitude: lng,
         isPublic: form.isPublic,
-      })
-      setShowModal(false)
-      setForm({ name: '', address: '', description: '', isPublic: true })
-      if (res.data.qrImage) {
-        setQr({
-          image: res.data.qrImage,
-          building: res.data,
-          url: `${window.location.origin}/building/${res.data.qrCode}`,
-        })
       }
-      setNotice('Building created successfully.')
+      if (editing) {
+        const res = await api.put(`/buildings/${editing.id}`, payload)
+        setNotice(`"${res.data.name}" map address saved. Responders will see it during emergencies.`)
+        setEditing(null)
+      } else {
+        const res = await api.post('/buildings', payload)
+        if (res.data.qrImage) {
+          setQr({
+            image: res.data.qrImage,
+            building: res.data,
+            url: `${window.location.origin}/building/${res.data.qrCode}`,
+          })
+        }
+        setNotice('Building created successfully.')
+      }
+      setShowModal(false)
+      setForm({ name: '', address: '', description: '', latitude: '', longitude: '', isPublic: true })
       fetchBuildings()
       setTimeout(() => setNotice(''), 4000)
     } catch (e: any) {
-      setFormError(e.response?.data?.error || 'Failed to create building. Please try again.')
+      setFormError(e.response?.data?.error || 'Failed to save building. Please try again.')
     } finally {
       setCreating(false)
     }
+  }
+
+  const openEdit = (b: Building) => {
+    setEditing(b)
+    setForm({
+      name: b.name || '',
+      address: b.address || '',
+      description: b.description || '',
+      latitude: b.latitude != null ? String(b.latitude) : '',
+      longitude: b.longitude != null ? String(b.longitude) : '',
+      isPublic: b.isPublic,
+    })
+    setFormError('')
+    setShowModal(true)
   }
 
   const confirmDelete = async () => {
@@ -132,7 +177,7 @@ export default function BuildingManager() {
         title="Buildings"
         subtitle="Manage buildings, floor plans, cameras, occupancy and safety reports."
         action={
-          <button onClick={() => { setFormError(''); setShowModal(true) }} className="btn-primary">
+          <button onClick={() => { setFormError(''); setEditing(null); setForm({ name: '', address: '', description: '', latitude: '', longitude: '', isPublic: true }); setShowModal(true) }} className="btn-primary">
             <PlusIcon className="w-5 h-5" /> Add Building
           </button>
         }
@@ -168,6 +213,16 @@ export default function BuildingManager() {
                     <span className={b.isPublic ? 'badge-green' : 'badge-gray'}>{b.isPublic ? 'Public' : 'Private'}</span>
                   </div>
                   <p className="text-gray-600 text-sm mt-0.5">{b.address}</p>
+                  {(b.latitude != null && b.longitude != null) && (
+                    <a
+                      href={mapsUrl(b.address, b.latitude, b.longitude)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs text-blue-600 underline mt-0.5 inline-block"
+                    >
+                      View on Google Maps ({b.latitude}, {b.longitude})
+                    </a>
+                  )}
                   <div className="flex gap-4 mt-2 text-xs text-gray-500">
                     <span>{b._count?.floors ?? 0} floors</span>
                     <span>{b._count?.cameras ?? 0} cameras</span>
@@ -182,6 +237,7 @@ export default function BuildingManager() {
                 <Link to={`/manager/presence/${b.id}`} className="btn-secondary btn-sm"><UsersIcon className="w-4 h-4" /> Presence</Link>
                 <Link to={`/manager/complaints/${b.id}`} className="btn-secondary btn-sm"><ChatBubbleLeftRightIcon className="w-4 h-4" /> Issues</Link>
                 <button onClick={() => showQr(b)} className="btn-secondary btn-sm"><QrCodeIcon className="w-4 h-4" /> QR</button>
+                <button onClick={() => openEdit(b)} className="btn-secondary btn-sm">Edit map</button>
                 <button onClick={() => setPendingDelete(b)} className="btn-secondary btn-sm !text-red-600 !border-red-200 hover:!bg-red-50" aria-label={`Delete ${b.name}`}>
                   <TrashIcon className="w-4 h-4" />
                 </button>
@@ -194,8 +250,8 @@ export default function BuildingManager() {
       {showModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl max-w-md w-full p-6 shadow-xl">
-            <h2 className="text-lg font-semibold text-gray-900">Add building</h2>
-            <p className="text-sm text-gray-500 mt-1">A public QR check-in link is generated automatically.</p>
+            <h2 className="text-lg font-semibold text-gray-900">{editing ? `Edit map address — ${editing.name}` : 'Add building'}</h2>
+            <p className="text-sm text-gray-500 mt-1">{editing ? 'Address + map pin responders see during a fire emergency.' : 'A public QR check-in link is generated automatically.'}</p>
             {formError && <div className="mt-3 p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm">{formError}</div>}
             <div className="space-y-4 mt-4">
               <div>
@@ -210,15 +266,35 @@ export default function BuildingManager() {
                 <label className="label">Description</label>
                 <textarea className="input h-20 resize-none" placeholder="Optional notes for occupants" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
               </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="label">Latitude (map pin)</label>
+                  <input className="input" placeholder="e.g. 23.8103" inputMode="decimal" value={form.latitude} onChange={(e) => setForm({ ...form, latitude: e.target.value })} />
+                </div>
+                <div>
+                  <label className="label">Longitude (map pin)</label>
+                  <input className="input" placeholder="e.g. 90.4125" inputMode="decimal" value={form.longitude} onChange={(e) => setForm({ ...form, longitude: e.target.value })} />
+                </div>
+              </div>
+              {form.address.trim() && (
+                <a
+                  href={mapsUrl(form.address.trim(), form.latitude.trim() === '' ? null : Number(form.latitude), form.longitude.trim() === '' ? null : Number(form.longitude))}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-xs text-blue-600 underline"
+                >
+                  Preview pin on Google Maps
+                </a>
+              )}
               <label className="flex items-center gap-2 text-sm text-gray-700">
                 <input type="checkbox" className="rounded" checked={form.isPublic} onChange={(e) => setForm({ ...form, isPublic: e.target.checked })} />
                 Public — visible via QR to occupants and responders
               </label>
             </div>
             <div className="flex gap-3 mt-6">
-              <button onClick={() => setShowModal(false)} className="flex-1 btn-secondary" disabled={creating}>Cancel</button>
+              <button onClick={() => { setShowModal(false); setEditing(null) }} className="flex-1 btn-secondary" disabled={creating}>Cancel</button>
               <button onClick={createBuilding} className="flex-1 btn-primary" disabled={creating || !form.name.trim() || !form.address.trim()}>
-                {creating ? 'Creating…' : 'Create building'}
+                {creating ? 'Saving…' : editing ? 'Save map address' : 'Create building'}
               </button>
             </div>
           </div>

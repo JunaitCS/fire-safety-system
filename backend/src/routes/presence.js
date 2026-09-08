@@ -84,6 +84,29 @@ router.post('/check-out', async (req, res) => {
     const existing = await prisma.occupantPresence.findUnique({ where: { id: presenceId } });
     if (!existing) return res.status(404).json({ error: 'Presence record not found' });
     if (!existing.isActive) return res.status(409).json({ error: 'Already checked out' });
+
+    // Auth-aware guard (backward compatible with logged-out guest self checkout):
+    // - No token  -> allow self checkout with unguessable presenceId (legacy QR guest flow).
+    // - MANAGER  -> allow only for buildings they own (any occupant).
+    // - Others   -> allow only own presences (userId match) or guest presences (userId null).
+    const authHeader = req.headers.authorization;
+    if (authHeader) {
+      try {
+        const jwt = require('jsonwebtoken');
+        const decoded = jwt.verify(authHeader.replace('Bearer ', ''), process.env.JWT_SECRET);
+        if (decoded.role === 'MANAGER') {
+          const building = await prisma.building.findUnique({ where: { id: existing.buildingId } });
+          if (!building || building.ownerId !== decoded.userId) {
+            return res.status(403).json({ error: 'Only the building manager can remove occupants from this building' });
+          }
+        } else if (existing.userId && existing.userId !== decoded.userId) {
+          return res.status(403).json({ error: 'You can only check out your own check-in' });
+        }
+      } catch (_) {
+        // Invalid token -> treat as unauthenticated self checkout (presenceId is unguessable).
+      }
+    }
+
     const presence = await prisma.occupantPresence.update({
       where: { id: presenceId },
       data: { isActive: false, checkedOutAt: new Date() },
@@ -94,6 +117,38 @@ router.post('/check-out', async (req, res) => {
     res.json(presence);
   } catch (error) {
     res.status(500).json({ error: 'Check-out failed' });
+  }
+});
+
+// Manager force-checkout / remove ANY occupant from their own building.
+// Used by PresenceBoard "Remove" button. Emits presence-force-removed so the
+// occupant's open pages clear instantly (plus occupant-checked-out for legacy listeners).
+router.delete('/:id', authMiddleware, async (req, res) => {
+  try {
+    if (req.user.role !== 'MANAGER') {
+      return res.status(403).json({ error: 'Only managers can remove occupants' });
+    }
+    const existing = await prisma.occupantPresence.findUnique({ where: { id: req.params.id } });
+    if (!existing) return res.status(404).json({ error: 'Presence record not found' });
+    const building = await prisma.building.findUnique({ where: { id: existing.buildingId } });
+    if (!building || building.ownerId !== req.user.userId) {
+      return res.status(403).json({ error: 'You can only remove occupants from your own buildings' });
+    }
+    if (!existing.isActive) return res.status(409).json({ error: 'Already checked out' });
+    const presence = await prisma.occupantPresence.update({
+      where: { id: req.params.id },
+      data: { isActive: false, checkedOutAt: new Date() },
+    });
+    if (req.io) {
+      req.io.to(`building-${presence.buildingId}`).emit('occupant-checked-out', { presenceId: presence.id });
+      req.io.to(`building-${presence.buildingId}`).emit('presence-force-removed', {
+        presenceId: presence.id,
+        buildingId: presence.buildingId,
+      });
+    }
+    res.json(presence);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to remove occupant' });
   }
 });
 
@@ -137,6 +192,14 @@ router.get('/status', authMiddleware, async (req, res) => {
 
 router.get('/building/:buildingId', authMiddleware, async (req, res) => {
   try {
+    // Managers may only list their own buildings; responders may list for incidents.
+    if (req.user.role === 'MANAGER') {
+      const building = await prisma.building.findUnique({ where: { id: req.params.buildingId } });
+      if (!building) return res.status(404).json({ error: 'Building not found' });
+      if (building.ownerId !== req.user.userId) {
+        return res.status(403).json({ error: 'You can only view occupants of your own buildings' });
+      }
+    }
     const list = await prisma.occupantPresence.findMany({
       where: { buildingId: req.params.buildingId, isActive: true },
       include: {

@@ -6,6 +6,12 @@ const authMiddleware = require('../middleware/auth');
 const router = express.Router();
 const prisma = new PrismaClient();
 
+const parseCoord = (v) => {
+  if (v === undefined || v === null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined; // undefined signals invalid
+};
+
 router.get('/', authMiddleware, async (req, res) => {
   try {
     let buildings;
@@ -105,6 +111,17 @@ router.post('/', authMiddleware, async (req, res) => {
     if (!name || !address) {
       return res.status(400).json({ error: 'Name and address are required' });
     }
+    const lat = parseCoord(latitude);
+    const lng = parseCoord(longitude);
+    if (lat === undefined || lng === undefined) {
+      return res.status(400).json({ error: 'Latitude/longitude must be valid numbers' });
+    }
+    if (lat !== null && (lat < -90 || lat > 90)) {
+      return res.status(400).json({ error: 'Latitude must be between -90 and 90' });
+    }
+    if (lng !== null && (lng < -180 || lng > 180)) {
+      return res.status(400).json({ error: 'Longitude must be between -180 and 180' });
+    }
     const qrCode = 'BUILDING_' + Date.now();
 
     const building = await prisma.building.create({
@@ -112,8 +129,8 @@ router.post('/', authMiddleware, async (req, res) => {
         name: String(name).trim(),
         address: String(address).trim(),
         description: description || null,
-        latitude: latitude ?? null,
-        longitude: longitude ?? null,
+        latitude: lat,
+        longitude: lng,
         isPublic: Boolean(isPublic),
         ownerId: req.user.userId,
         qrCode,
@@ -127,6 +144,58 @@ router.post('/', authMiddleware, async (req, res) => {
   } catch (error) {
     console.error('Error creating building:', error);
     res.status(500).json({ error: 'Failed to create building' });
+  }
+});
+
+// Responder overview: public buildings (limited fields, always visible) +
+// active FIRE emergencies with full building details (address + map coords).
+// Private buildings without an active fire are returned as locked placeholders.
+router.get('/responder/overview', authMiddleware, async (req, res) => {
+  try {
+    if (!['RESPONDER', 'MANAGER'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    const wherePublic = req.user.role === 'MANAGER'
+      ? { ownerId: req.user.userId }
+      : { isPublic: true };
+    const publicBuildings = await prisma.building.findMany({
+      where: wherePublic,
+      select: {
+        id: true, name: true, address: true, isPublic: true,
+        latitude: true, longitude: true, qrCode: true,
+        _count: { select: { floors: true, cameras: true } },
+      },
+      orderBy: { name: 'asc' },
+    });
+    const activeEmergencies = await prisma.emergencyEvent.findMany({
+      where: { status: 'ACTIVE', type: 'FIRE' },
+      include: {
+        building: {
+          select: {
+            id: true, name: true, address: true, description: true,
+            latitude: true, longitude: true, isPublic: true, qrCode: true,
+            _count: { select: { floors: true, cameras: true } },
+          },
+        },
+        triggerer: { select: { id: true, name: true } },
+        _count: { select: { occupancies: true, sosRequests: true } },
+      },
+      orderBy: { startTime: 'desc' },
+    });
+    const fireIds = new Set(activeEmergencies.map((e) => e.buildingId));
+    // Locked private buildings (manager scope only lists own, so mostly empty;
+    // responders get an explicit empty list unless fires expose them).
+    let locked = [];
+    if (req.user.role === 'RESPONDER') {
+      const fireBuildings = activeEmergencies.map((e) => e.building).filter(Boolean);
+      // Merge fire buildings that are private so the UI can show them separately.
+      res.json({ publicBuildings, activeEmergencies, fireBuildings, locked });
+      return;
+    }
+    res.json({ publicBuildings, activeEmergencies, fireBuildings: [], locked });
+  } catch (error) {
+    console.error('Error building responder overview:', error);
+    res.status(500).json({ error: 'Failed to build responder overview' });
   }
 });
 
@@ -157,6 +226,19 @@ router.get('/:id', authMiddleware, async (req, res) => {
       return res.status(403).json({ error: 'Access denied' });
     }
 
+    // Responders: private building details unlock ONLY during an ACTIVE FIRE
+    // emergency for that building. Public buildings always return limited info.
+    // Drills never unlock private details.
+    if (req.user.role === 'RESPONDER' && !building.isPublic) {
+      const activeFire = await prisma.emergencyEvent.findFirst({
+        where: { buildingId: building.id, status: 'ACTIVE', type: 'FIRE' },
+        select: { id: true },
+      });
+      if (!activeFire) {
+        return res.status(403).json({ error: 'Building details are private. They unlock during an active fire emergency.' });
+      }
+    }
+
     res.json(building);
   } catch (error) {
     console.error('Error fetching building:', error);
@@ -183,8 +265,18 @@ router.put('/:id', authMiddleware, async (req, res) => {
     if (name !== undefined) data.name = String(name).trim();
     if (address !== undefined) data.address = String(address).trim();
     if (description !== undefined) data.description = description || null;
-    if (latitude !== undefined) data.latitude = latitude;
-    if (longitude !== undefined) data.longitude = longitude;
+    if (latitude !== undefined) {
+      const lat = parseCoord(latitude);
+      if (lat === undefined) return res.status(400).json({ error: 'Latitude must be a valid number' });
+      if (lat !== null && (lat < -90 || lat > 90)) return res.status(400).json({ error: 'Latitude must be between -90 and 90' });
+      data.latitude = lat;
+    }
+    if (longitude !== undefined) {
+      const lng = parseCoord(longitude);
+      if (lng === undefined) return res.status(400).json({ error: 'Longitude must be a valid number' });
+      if (lng !== null && (lng < -180 || lng > 180)) return res.status(400).json({ error: 'Longitude must be between -180 and 180' });
+      data.longitude = lng;
+    }
     if (isPublic !== undefined) data.isPublic = Boolean(isPublic);
 
     const updated = await prisma.building.update({

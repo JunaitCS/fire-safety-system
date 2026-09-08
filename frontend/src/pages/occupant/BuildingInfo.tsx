@@ -59,6 +59,8 @@ export default function BuildingInfo() {
   const [checkInError, setCheckInError] = useState('')
   const [emergency, setEmergency] = useState<any>(null)
   const [occupantCount, setOccupantCount] = useState(0)
+  const [exitLoad, setExitLoad] = useState<any[]>([])
+  const [exitUpdated, setExitUpdated] = useState<string | null>(null)
   const { socket, connect, joinBuilding } = useSocketStore()
   const { user, token } = useAuthStore()
 
@@ -154,6 +156,26 @@ export default function BuildingInfo() {
     socket.on('drill-alert', onEm)
     socket.on('emergency-resolved', onRes)
     socket.on('fire-resolved', onRes)
+    const onForceRemoved = (data: any) => {
+      // Manager removed an occupant — if it's us, clear check-in state instantly.
+      try {
+        if (!data?.presenceId) return
+        const raw = localStorage.getItem(PRESENCE_KEY)
+        if (raw) {
+          const p = JSON.parse(raw)
+          if (p.presenceId === data.presenceId) {
+            localStorage.removeItem(PRESENCE_KEY)
+            setCheckedIn(false)
+            setPresenceId(null)
+          }
+        } else if (presenceId && presenceId === data.presenceId) {
+          setCheckedIn(false)
+          setPresenceId(null)
+        }
+      } catch {}
+    }
+    socket.on('presence-force-removed', onForceRemoved)
+    socket.on('occupant-checked-out', onForceRemoved)
     return () => {
       socket.off('emergency-started', onEm)
       socket.off('building-emergency', onEm)
@@ -161,8 +183,10 @@ export default function BuildingInfo() {
       socket.off('drill-alert', onEm)
       socket.off('emergency-resolved', onRes)
       socket.off('fire-resolved', onRes)
+      socket.off('presence-force-removed', onForceRemoved)
+      socket.off('occupant-checked-out', onForceRemoved)
     }
-  }, [socket, building?.id])
+  }, [socket, building?.id, presenceId])
 
   const requestNotifPermission = () => {
     if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
@@ -233,6 +257,39 @@ export default function BuildingInfo() {
     }
   }
 
+  // Live exit crowd levels (public-safe counts, no video). Polls every 5s so
+  // occupants see which exit is less crowded during fire/drill, live.
+  useEffect(() => {
+    if (!building?.id) return
+    let cancelled = false
+    const fetchLoad = () => {
+      api.get(`/cameras/building/${building.id}/exit-load`).then((r) => {
+        if (cancelled) return
+        setExitLoad(r.data?.exits || [])
+        setExitUpdated(r.data?.updatedAt || null)
+      }).catch(() => {})
+    }
+    fetchLoad()
+    const t = window.setInterval(fetchLoad, 5000)
+    return () => { cancelled = true; window.clearInterval(t) }
+  }, [building?.id])
+
+  useEffect(() => {
+    if (!socket || !building?.id) return
+    const refreshLoad = () => {
+      api.get(`/cameras/building/${building.id}/exit-load`).then((r) => {
+        setExitLoad(r.data?.exits || [])
+        setExitUpdated(r.data?.updatedAt || null)
+      }).catch(() => {})
+    }
+    socket.on('exit-load-update', refreshLoad)
+    socket.on('detection', refreshLoad)
+    return () => {
+      socket.off('exit-load-update', refreshLoad)
+      socket.off('detection', refreshLoad)
+    }
+  }, [socket, building?.id])
+
   const selectedFloor = useMemo(
     () => building?.floors?.find((f: any) => f.id === selectedFloorId),
     [building, selectedFloorId]
@@ -252,6 +309,22 @@ export default function BuildingInfo() {
       return { ...el, label, points }
     })
   }, [selectedFloor])
+
+  const recommendedExit = useMemo(() => exitLoad.find((e) => e.recommended) || null, [exitLoad])
+  // Match exit cameras to drawn EMERGENCY_EXIT labels (name contains label or vice versa).
+  const exitMarks = useMemo(() => {
+    const marks: Record<string, { count: number; level: string; recommended: boolean; name: string }> = {}
+    for (const el of elements) {
+      if (el.type !== 'EMERGENCY_EXIT') continue
+      const label = String(el.label || '').toLowerCase()
+      const hit = exitLoad.find((c) => {
+        const n = String(c.name || '').toLowerCase()
+        return (label && n.includes(label)) || (label && label.includes(n)) || n === label
+      })
+      if (hit) marks[el.id] = { count: hit.count, level: hit.level, recommended: !!hit.recommended, name: hit.name }
+    }
+    return marks
+  }, [elements, exitLoad])
 
   // Merged map: uploaded photo behind, drawn routes on top — same design
   // space as the manager canvas. Scales down to fit phones.
@@ -370,6 +443,49 @@ export default function BuildingInfo() {
           )}
         </div>
 
+        {/* Live exit guidance — which route is less crowded (exit cameras, live) */}
+        {exitLoad.length > 0 && (
+          <div className={`card ${emergency ? 'border-green-400 bg-green-50' : 'border-gray-200'}`}>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h2 className="font-semibold text-gray-900 flex items-center gap-2">
+                  <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+                  {emergency ? 'Recommended exit — live crowd check' : 'Exit busyness — live'}
+                </h2>
+                {recommendedExit ? (
+                  <p className="text-sm text-gray-700 mt-1">
+                    Use <strong className="text-green-700">{recommendedExit.name}</strong> ({recommendedExit.count} {recommendedExit.count === 1 ? 'person' : 'people'} there)
+                    {exitLoad.length > 1 && (
+                      <> · avoid <strong className="text-red-600">{[...exitLoad].sort((a, b) => b.count - a.count)[0].name}</strong> ({[...exitLoad].sort((a, b) => b.count - a.count)[0].count} there)</>
+                    )}
+                  </p>
+                ) : (
+                  <p className="text-sm text-gray-600 mt-1">Live exit counts updating…</p>
+                )}
+              </div>
+              {exitUpdated && <p className="text-[11px] text-gray-400">Live · {new Date(exitUpdated).toLocaleTimeString()}</p>}
+            </div>
+            <div className="flex flex-wrap gap-2 mt-3">
+              {exitLoad.map((e) => (
+                <span
+                  key={e.cameraId}
+                  className={`text-xs font-medium px-2.5 py-1 rounded-full border ${
+                    e.recommended
+                      ? 'bg-green-600 text-white border-green-600'
+                      : e.level === 'CROWDED'
+                        ? 'bg-red-50 text-red-700 border-red-200'
+                        : e.level === 'MODERATE'
+                          ? 'bg-amber-50 text-amber-700 border-amber-200'
+                          : 'bg-gray-50 text-gray-600 border-gray-200'
+                  }`}
+                >
+                  {e.recommended ? '✓ ' : ''}{e.name}: {e.count} · {e.level}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Evacuation map */}
         <div className="card">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
@@ -430,16 +546,30 @@ export default function BuildingInfo() {
                           height={el.height}
                           fill={fill}
                           cornerRadius={el.type === 'EMERGENCY_EXIT' ? 4 : 0}
+                          stroke={el.type === 'EMERGENCY_EXIT' && exitMarks[el.id] ? (exitMarks[el.id].recommended ? '#16a34a' : exitMarks[el.id].level === 'CROWDED' ? '#dc2626' : '#f59e0b') : undefined}
+                          strokeWidth={el.type === 'EMERGENCY_EXIT' && exitMarks[el.id] ? 3 : 0}
                         />
                         {el.label && (
                           <Text
                             x={el.x}
                             y={el.y + el.height / 2 - 6}
                             width={Math.max(el.width, 60)}
-                            text={el.label}
+                            text={el.type === 'EMERGENCY_EXIT' && exitMarks[el.id] ? `${el.label} · ${exitMarks[el.id].count}` : el.label}
                             fontSize={10}
                             fontStyle="bold"
                             fill={el.type === 'EMERGENCY_EXIT' ? '#fff' : '#0f172a'}
+                            align="center"
+                          />
+                        )}
+                        {el.type === 'EMERGENCY_EXIT' && exitMarks[el.id]?.recommended && (
+                          <Text
+                            x={el.x}
+                            y={el.y - 16}
+                            width={Math.max(el.width, 90)}
+                            text="✓ USE THIS EXIT"
+                            fontSize={10}
+                            fontStyle="bold"
+                            fill="#16a34a"
                             align="center"
                           />
                         )}

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import api from '../../utils/api'
 import { useSocketStore } from '../../store/socketStore'
-import { PageHeader, LoadingState, EmptyState } from '../../components/ui'
+import { PageHeader, LoadingState, EmptyState, ConfirmModal } from '../../components/ui'
 import { UsersIcon } from '@heroicons/react/24/outline'
 
 interface Presence {
@@ -23,6 +23,9 @@ export default function PresenceBoard() {
   const [sos, setSos] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+  const [pendingRemove, setPendingRemove] = useState<Presence | null>(null)
+  const [removing, setRemoving] = useState(false)
   const { socket, joinBuilding } = useSocketStore()
 
   useEffect(() => {
@@ -45,11 +48,13 @@ export default function PresenceBoard() {
     const reload = () => { if (selected) fetchAll() }
     socket.on('occupant-checked-in', reload)
     socket.on('occupant-checked-out', reload)
+    socket.on('presence-force-removed', reload)
     socket.on('sos-received', reload)
     socket.on('sos-updated', reload)
     return () => {
       socket.off('occupant-checked-in', reload)
       socket.off('occupant-checked-out', reload)
+      socket.off('presence-force-removed', reload)
       socket.off('sos-received', reload)
       socket.off('sos-updated', reload)
     }
@@ -85,6 +90,23 @@ export default function PresenceBoard() {
       await api.post(`/sos/${id}/resolve`)
       fetchAll()
     } catch {}
+  }
+
+  const confirmRemove = async () => {
+    if (!pendingRemove) return
+    setRemoving(true)
+    try {
+      await api.delete(`/presence/${pendingRemove.id}`)
+      const name = pendingRemove.user?.name || pendingRemove.guestName || 'Guest'
+      setNotice(`${name} has been checked out.`)
+      setTimeout(() => setNotice(''), 4000)
+      setPendingRemove(null)
+      fetchAll()
+    } catch (e: any) {
+      setError(e.response?.data?.error || 'Could not remove occupant.')
+    } finally {
+      setRemoving(false)
+    }
   }
 
   const exportCsv = () => {
@@ -125,6 +147,16 @@ export default function PresenceBoard() {
       />
 
       {error && <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm">{error}</div>}
+      {notice && <div className="p-3 bg-green-50 border border-green-200 text-green-800 rounded-lg text-sm">{notice}</div>}
+      {pendingRemove && (
+        <ConfirmModal
+          title={`Check out ${pendingRemove.user?.name || pendingRemove.guestName || 'this occupant'}?`}
+          message="They will be removed from the active presence list and stop receiving building alerts on their devices."
+          confirmLabel={removing ? 'Removing…' : 'Check out occupant'}
+          onCancel={() => setPendingRemove(null)}
+          onConfirm={confirmRemove}
+        />
+      )}
 
       {sos.length > 0 && (
         <div className="card border-red-200 bg-red-50/50">
@@ -163,6 +195,7 @@ export default function PresenceBoard() {
                   <th className="table-head px-4 py-3">Contact</th>
                   <th className="table-head px-4 py-3">Location hint</th>
                   <th className="table-head px-4 py-3">Checked in</th>
+                  <th className="table-head px-4 py-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -172,6 +205,14 @@ export default function PresenceBoard() {
                     <td className="px-4 py-3 text-sm text-gray-600">{p.user?.phone || p.user?.email || p.guestPhone || '—'}</td>
                     <td className="px-4 py-3 text-sm text-gray-600">{p.floorHint || '—'}</td>
                     <td className="px-4 py-3 text-sm text-gray-500">{new Date(p.checkedInAt).toLocaleString()}</td>
+                    <td className="px-4 py-3 text-sm text-right">
+                      <button
+                        onClick={() => setPendingRemove(p)}
+                        className="px-3 py-1.5 text-xs font-medium border border-red-200 text-red-600 rounded-lg hover:bg-red-50"
+                      >
+                        Check out
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>

@@ -13,6 +13,15 @@ import {
   MapPinIcon,
 } from '@heroicons/react/24/outline'
 
+const mapsUrl = (address: string, lat?: number | null, lng?: number | null) => {
+  if (lat != null && lng != null) return `https://maps.google.com/?q=${lat},${lng}`
+  return `https://maps.google.com/?q=${encodeURIComponent(address || '')}`
+}
+const directionsUrl = (address: string, lat?: number | null, lng?: number | null) => {
+  if (lat != null && lng != null) return `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`
+  return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(address || '')}`
+}
+
 export default function EmergencyMonitor() {
   const { emergencyId } = useParams()
   const [emergency, setEmergency] = useState<any>(null)
@@ -142,6 +151,24 @@ export default function EmergencyMonitor() {
             <p className="text-sm text-gray-600 flex items-center gap-1">
               <MapPinIcon className="w-4 h-4" /> {emergency.building?.address}
             </p>
+            <div className="flex flex-wrap gap-2 mt-2">
+              <a
+                href={directionsUrl(emergency.building?.address, emergency.building?.latitude, emergency.building?.longitude)}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs font-medium text-white bg-red-600 hover:bg-red-700 px-3 py-1.5 rounded-lg"
+              >
+                Get directions
+              </a>
+              <a
+                href={mapsUrl(emergency.building?.address, emergency.building?.latitude, emergency.building?.longitude)}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs font-medium text-red-700 border border-red-200 px-3 py-1.5 rounded-lg hover:bg-red-50"
+              >
+                View on map{(emergency.building?.latitude != null && emergency.building?.longitude != null) ? ` (${emergency.building.latitude}, ${emergency.building.longitude})` : ''}
+              </a>
+            </div>
           </div>
         </div>
         {emergency.status === 'ACTIVE' && (

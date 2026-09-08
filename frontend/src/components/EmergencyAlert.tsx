@@ -29,6 +29,35 @@ export default function EmergencyAlert({ filterBuildingId }: { filterBuildingId?
   const sirenMode = useSirenStore((s) => s.mode)
   const stopSiren = useSirenStore((s) => s.stop)
 
+  // Keep the screen awake + flash the tab title while a REAL fire is active
+  // so background-tab alerts are noticed. All best-effort, never throws.
+  useEffect(() => {
+    const hasFire = alerts.some((a) => kindOf(a) === 'FIRE')
+    let lock: any = null
+    let titleTimer: number | null = null
+    const origTitle = typeof document !== 'undefined' ? document.title : ''
+    if (hasFire) {
+      try {
+        const nav: any = navigator as any
+        if (nav?.wakeLock?.request) {
+          nav.wakeLock.request('screen').then((l: any) => { lock = l }).catch(() => {})
+        }
+      } catch {}
+      try {
+        let on = false
+        titleTimer = window.setInterval(() => {
+          on = !on
+          document.title = on ? 'FIRE EMERGENCY — EVACUATE NOW' : origTitle || 'FireGuard Pro'
+        }, 1200)
+      } catch {}
+    }
+    return () => {
+      try { lock?.release?.().catch(() => {}) } catch {}
+      if (titleTimer) window.clearInterval(titleTimer)
+      try { if (origTitle) document.title = origTitle } catch {}
+    }
+  }, [alerts])
+
   useEffect(() => {
     if (!socket) return
     const siren = useSirenStore.getState()
@@ -108,8 +137,11 @@ export default function EmergencyAlert({ filterBuildingId }: { filterBuildingId?
     }
   }, [socket, filterBuildingId])
 
-  const dismissAlert = (alertId: string | undefined) => {
+  const dismissAlert = (alertId: string | undefined, kind?: 'FIRE' | 'DRILL') => {
     if (!alertId) return
+    // Real fires are NOT dismissable — only the resolve event or mute clears
+    // them. This stops occupants hiding a live evacuation order by accident.
+    if (kind === 'FIRE') return
     setAlerts(prev => prev.filter(a => normId(a) !== alertId))
   }
 
@@ -139,7 +171,7 @@ export default function EmergencyAlert({ filterBuildingId }: { filterBuildingId?
                   {alert.buildingName || alert.building?.name || 'Affected building'} · Severity: {alert.severity || 'high'} · {alert.startTime ? new Date(alert.startTime).toLocaleTimeString() : ''}
                 </p>
               </div>
-              <button onClick={() => dismissAlert(normId(alert))} className={`p-1 rounded ${fire ? 'hover:bg-red-600' : 'hover:bg-amber-600'}`}>
+              <button onClick={() => dismissAlert(normId(alert), kind)} className={`p-1 rounded ${fire ? 'hover:bg-red-600 opacity-40 cursor-not-allowed' : 'hover:bg-amber-600'}`} title={fire ? 'Real fire alerts cannot be dismissed — evacuate now' : 'Dismiss drill'}>
                 <XMarkIcon className="w-5 h-5" />
               </button>
             </div>

@@ -8,7 +8,8 @@ const prisma = new PrismaClient();
 router.get('/building/:buildingId', authMiddleware, async (req, res) => {
   try {
     // Privacy: occupants may never bulk-list cameras. Managers/responders only.
-    // (Occupant evacuation map uses whitelisted exit markers from /buildings/qr/:qrCode.)
+    // (Occupant evacuation map uses whitelisted exit markers from /buildings/qr/:qrCode.
+    //  Live crowd levels use the public-safe /exit-load endpoint below instead.)
     if (req.user.role === 'OCCUPANT' && req.query.emergencyOnly !== '0') {
       return res.status(403).json({ error: 'Camera access is restricted to managers and responders' });
     }
@@ -26,6 +27,88 @@ router.get('/building/:buildingId', authMiddleware, async (req, res) => {
   } catch (error) {
     console.error('Error fetching cameras:', error);
     res.status(500).json({ error: 'Failed to fetch cameras' });
+  }
+});
+
+// Public-safe live crowd levels per EXIT camera (no video, no room feeds).
+// Occupants poll this during fire/drill to pick the less-crowded exit.
+// Counts prefer the freshest DetectionEvent (<2 min), fall back to active
+// drill exit totals, then to live CV stats best-effort. Never 500s when the
+// CV service is offline — it degrades to DB counts.
+router.get('/building/:buildingId/exit-load', async (req, res) => {
+  try {
+    const { buildingId } = req.params;
+    const building = await prisma.building.findUnique({ where: { id: buildingId } });
+    if (!building) return res.status(404).json({ error: 'Building not found' });
+
+    const exits = await prisma.camera.findMany({
+      where: { buildingId, isActive: true, OR: [{ isExit: true }, { role: { in: ['EXIT', 'BOTH'] } }] },
+      select: { id: true, name: true, floorId: true, role: true, isExit: true },
+      orderBy: { name: 'asc' },
+    });
+    if (!exits.length) return res.json({ buildingId, exits: [], updatedAt: new Date().toISOString() });
+
+    const since = new Date(Date.now() - 2 * 60 * 1000);
+    const [recent, activeDrill] = await Promise.all([
+      prisma.detectionEvent.findMany({
+        where: { cameraId: { in: exits.map((c) => c.id) }, timestamp: { gte: since } },
+        orderBy: { timestamp: 'desc' },
+        take: exits.length * 5,
+      }),
+      prisma.fireDrill.findFirst({
+        where: { buildingId, status: 'active' },
+        include: { exitStats: true },
+      }),
+    ]);
+    const latestByCam = {};
+    for (const d of recent) {
+      if (!latestByCam[d.cameraId]) latestByCam[d.cameraId] = d;
+    }
+    const drillByCam = {};
+    if (activeDrill) {
+      for (const s of activeDrill.exitStats || []) drillByCam[s.cameraId] = s.exitCount;
+    }
+
+    // Best-effort live CV stats (short timeout, failures ignored).
+    let liveByCam = {};
+    try {
+      const cvBase = (process.env.PYTHON_SERVICE_URL || process.env.CV_BASE_URL || 'http://localhost:5000').replace(/\/$/, '');
+      const results = await Promise.all(
+        exits.map(async (c) => {
+          try {
+            const ctrl = new AbortController();
+            const t = setTimeout(() => ctrl.abort(), 1500);
+            const r = await fetch(`${cvBase}/cameras/${c.id}/stats`, { signal: ctrl.signal }).then((x) => (x.ok ? x.json() : null)).catch(() => null);
+            clearTimeout(t);
+            const n = r != null ? Number(r.count ?? r.personCount ?? r.people) : NaN;
+            return [c.id, Number.isFinite(n) && n >= 0 ? n : null];
+          } catch { return [c.id, null]; }
+        })
+      );
+      liveByCam = Object.fromEntries(results);
+    } catch { liveByCam = {}; }
+
+    const levelOf = (n) => (n < 5 ? 'LOW' : n < 15 ? 'MODERATE' : 'CROWDED');
+    let list = exits.map((c) => {
+      let count = null;
+      let source = 'none';
+      if (latestByCam[c.id]) { count = latestByCam[c.id].count; source = 'detection'; }
+      else if (drillByCam[c.id] != null) { count = drillByCam[c.id]; source = 'drill'; }
+      else if (liveByCam[c.id] != null) { count = liveByCam[c.id]; source = 'live'; }
+      if (count == null) { count = 0; source = 'none'; }
+      return {
+        cameraId: c.id, name: c.name, floorId: c.floorId,
+        role: c.role || (c.isExit ? 'EXIT' : 'CCTV'),
+        count, level: levelOf(count), source,
+        recommended: false,
+      };
+    });
+    list.sort((a, b) => a.count - b.count);
+    if (list.length) list[0].recommended = true;
+    res.json({ buildingId, exits: list, updatedAt: new Date().toISOString() });
+  } catch (error) {
+    console.error('Error fetching exit load:', error);
+    res.status(500).json({ error: 'Failed to fetch exit load' });
   }
 });
 
@@ -253,6 +336,15 @@ router.post('/:id/detect', async (req, res) => {
           count,
           timestamp: detection.timestamp,
         });
+        // Live exit-crowd hint for occupant evacuation screens (throttled
+        // client-side by polling; this push makes the first update instant).
+        if (camera.isExit || camera.role === 'EXIT' || camera.role === 'BOTH') {
+          io.to(`building-${camera.buildingId}`).emit('exit-load-update', {
+            cameraId: req.params.id,
+            count,
+            timestamp: detection.timestamp,
+          });
+        }
       }
     }
 

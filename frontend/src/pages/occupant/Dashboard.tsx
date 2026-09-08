@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import api from '../../utils/api'
 import { useAuthStore } from '../../store/authStore'
 import QrScanner from '../../components/occupant/QrScanner'
+import { useSocketStore } from '../../store/socketStore'
 import { PhoneIcon, QrCodeIcon, ShieldCheckIcon, BuildingOfficeIcon, MapPinIcon, ArrowRightOnRectangleIcon } from '@heroicons/react/24/outline'
 
 const PRESENCE_KEY = 'fireguard-presence'
@@ -20,6 +21,7 @@ export default function OccupantDashboard() {
   const [checked, setChecked] = useState<CheckedIn[]>([])
   const [loading, setLoading] = useState(true)
   const [showScanner, setShowScanner] = useState(false)
+  const { socket, connect } = useSocketStore()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -61,6 +63,21 @@ export default function OccupantDashboard() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  useEffect(() => { connect() }, [connect])
+
+  // If a manager force-checks us out, refresh immediately (server is source of truth).
+  useEffect(() => {
+    if (!socket) return
+    const onRemoved = () => load()
+    const onCheckedOut = () => load()
+    socket.on('presence-force-removed', onRemoved)
+    socket.on('occupant-checked-out', onCheckedOut)
+    return () => {
+      socket.off('presence-force-removed', onRemoved)
+      socket.off('occupant-checked-out', onCheckedOut)
+    }
+  }, [socket, load])
 
   const checkOut = async (presenceId: string) => {
     try {

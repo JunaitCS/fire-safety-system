@@ -34,6 +34,8 @@ export default function EmergencyView() {
   const [sosMessage, setSosMessage] = useState('')
   const [showSosModal, setShowSosModal] = useState(false)
   const [sosError, setSosError] = useState('')
+  const [exitLoad, setExitLoad] = useState<any[]>([])
+  const [exitUpdated, setExitUpdated] = useState<string | null>(null)
   const { socket, connect, joinBuilding } = useSocketStore()
   const { user } = useAuthStore()
 
@@ -139,6 +141,36 @@ export default function EmergencyView() {
     }
   }
 
+  // Live exit crowd levels for the active building (public-safe counts).
+  useEffect(() => {
+    const bid = activeEmergency?.buildingId
+    if (!bid) { setExitLoad([]); return }
+    let cancelled = false
+    const fetchLoad = () => {
+      api.get(`/cameras/building/${bid}/exit-load`).then((r) => {
+        if (cancelled) return
+        setExitLoad(r.data?.exits || [])
+        setExitUpdated(r.data?.updatedAt || null)
+      }).catch(() => {})
+    }
+    fetchLoad()
+    const t = window.setInterval(fetchLoad, 5000)
+    return () => { cancelled = true; window.clearInterval(t) }
+  }, [activeEmergency?.buildingId])
+
+  useEffect(() => {
+    if (!socket || !activeEmergency?.buildingId) return
+    const refreshLoad = () => {
+      const bid = activeEmergency.buildingId
+      api.get(`/cameras/building/${bid}/exit-load`).then((r) => {
+        setExitLoad(r.data?.exits || [])
+        setExitUpdated(r.data?.updatedAt || null)
+      }).catch(() => {})
+    }
+    socket.on('exit-load-update', refreshLoad)
+    return () => { socket.off('exit-load-update', refreshLoad) }
+  }, [socket, activeEmergency?.buildingId])
+
   const sendSOS = async () => {
     if (!activeEmergency || !user) return
     setSosError('')
@@ -214,6 +246,46 @@ export default function EmergencyView() {
           </p>
         </div>
       </div>
+
+      {exitLoad.length > 0 && (
+        <div className={`card mb-6 ${drill ? 'border-amber-300' : 'border-green-400 bg-green-50/60'}`}>
+          <h2 className="font-semibold mb-1 flex items-center gap-2">
+            <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+            {drill ? 'Drill exits — live busyness' : 'Recommended exit — live crowd check'}
+          </h2>
+          {(() => {
+            const rec = exitLoad.find((e) => e.recommended)
+            const worst = [...exitLoad].sort((a, b) => b.count - a.count)[0]
+            return rec ? (
+              <p className="text-sm text-gray-700">
+                Use <strong className="text-green-700">{rec.name}</strong> ({rec.count} there)
+                {exitLoad.length > 1 && worst && worst.cameraId !== rec.cameraId && (
+                  <> · avoid <strong className="text-red-600">{worst.name}</strong> ({worst.count} there)</>
+                )}
+              </p>
+            ) : null
+          })()}
+          <div className="flex flex-wrap gap-2 mt-3">
+            {exitLoad.map((e) => (
+              <span
+                key={e.cameraId}
+                className={`text-xs font-medium px-2.5 py-1 rounded-full border ${
+                  e.recommended
+                    ? 'bg-green-600 text-white border-green-600'
+                    : e.level === 'CROWDED'
+                      ? 'bg-red-50 text-red-700 border-red-200'
+                      : e.level === 'MODERATE'
+                        ? 'bg-amber-50 text-amber-700 border-amber-200'
+                        : 'bg-gray-50 text-gray-600 border-gray-200'
+                }`}
+              >
+                {e.recommended ? '✓ ' : ''}{e.name}: {e.count} · {e.level}
+              </span>
+            ))}
+          </div>
+          {exitUpdated && <p className="text-[11px] text-gray-400 mt-2">Live · {new Date(exitUpdated).toLocaleTimeString()}</p>}
+        </div>
+      )}
 
       <div className="card mb-6">
         <h2 className="font-semibold mb-3">Evacuation Instructions</h2>

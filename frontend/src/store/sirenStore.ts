@@ -15,6 +15,7 @@ let ctx: AudioContext | null = null
 let osc: OscillatorNode | null = null
 let gain: GainNode | null = null
 let timer: number | null = null
+let resumeRetry: number | null = null
 
 // Phones block audio until the user interacts with the page, so a siren
 // started by a socket push can be born suspended (silent). Sticky-gesture
@@ -26,7 +27,11 @@ if (typeof window !== 'undefined') {
     } catch {}
   }
   window.addEventListener('pointerdown', wake)
+  window.addEventListener('touchend', wake)
   window.addEventListener('keydown', wake)
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') wake()
+  })
 }
 
 function vibrate(pattern: number | number[]) {
@@ -37,6 +42,7 @@ function vibrate(pattern: number | number[]) {
 
 function teardown() {
   if (timer) { window.clearInterval(timer); timer = null }
+  if (resumeRetry) { window.clearInterval(resumeRetry); resumeRetry = null }
   if (osc) { try { osc.stop() } catch {} osc = null }
   if (ctx) { try { ctx.close() } catch {} ctx = null }
   gain = null
@@ -77,8 +83,19 @@ function build(kind: 'drill' | 'fire') {
     osc.start()
     // If the context is still suspended (no user gesture yet on this phone),
     // the oscillator runs silently until the wake hook above resumes it.
+    // Retry resume for up to ~30s so a background-tab alert gets loud alone.
     try { ctx.resume?.().catch(() => {}) } catch {}
-    vibrate(kind === 'fire' ? [400, 200, 400, 200, 800] : [300, 300, 300, 300])
+    if (resumeRetry) window.clearInterval(resumeRetry)
+    let tries = 0
+    resumeRetry = window.setInterval(() => {
+      tries += 1
+      try {
+        if (ctx && ctx.state === 'suspended') ctx.resume?.().catch(() => {})
+        else if (resumeRetry) { window.clearInterval(resumeRetry); resumeRetry = null }
+      } catch {}
+      if (tries > 15 && resumeRetry) { window.clearInterval(resumeRetry); resumeRetry = null }
+    }, 2000)
+    vibrate(kind === 'fire' ? [500, 200, 500, 200, 1000] : [300, 300, 300, 300])
   } catch {
     teardown()
   }
